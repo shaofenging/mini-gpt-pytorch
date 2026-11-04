@@ -1,3 +1,5 @@
+[中文说明](README.zh-CN.md)
+
 # MiniGPT — Decoder-only Transformer in PyTorch
 
 A compact character-level language model for understanding and validating GPT internals through training, checkpointing, and autoregressive generation on Tiny Shakespeare.
@@ -103,6 +105,7 @@ mini-gpt-pytorch/
 ├── data/input.txt        # Tiny Shakespeare
 ├── tests/test_core.py    # 10 core correctness tests
 ├── README.md
+├── README.zh-CN.md       # Chinese documentation
 └── .gitignore
 ```
 
