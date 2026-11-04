@@ -1,172 +1,125 @@
 # MiniGPT — Decoder-only Transformer in PyTorch
 
-## Overview
+A compact character-level language model for understanding and validating GPT internals through training, checkpointing, and autoregressive generation on Tiny Shakespeare.
 
-MiniGPT is a small decoder-only Transformer language model implemented in PyTorch. It uses a character-level tokenizer and the Tiny Shakespeare dataset, and supports training, validation, checkpoint saving/loading, and autoregressive text generation.
+**Tech Stack:** Python · PyTorch · NumPy · tqdm · pytest
 
-This version builds on [HaoPan036/Mini-GPT](https://github.com/HaoPan036/Mini-GPT). See [Attribution](#attribution) for the upstream source and changes in this version.
+## 1. Model Architecture
 
-## Architecture
-
-```text
-Token Embedding + Learned Position Embedding
-                  ↓
-Transformer Block × n_layer
-  Pre-LayerNorm → Causal Multi-Head Self-Attention → Residual Connection
-  Pre-LayerNorm → Feed-Forward Network            → Residual Connection
-                  ↓
-Final LayerNorm → Language Model Head → Next-token Logits
+```mermaid
+flowchart TD
+    I["Token IDs"] --> TE["Token Embedding"]
+    P["Position IDs"] --> PE["Learned Position Embedding"]
+    TE --> E["Add Embeddings"]
+    PE --> E
+    E --> X
+    subgraph BLOCK["Pre-LN Transformer Block — repeated 6 times"]
+        X["Block Input"] --> LN1["LayerNorm"]
+        LN1 --> ATT["Causal Multi-Head Attention<br/>Q/K/V, mask, concat, output projection"]
+        ATT --> R1["Residual Add"]
+        X --> R1
+        R1 --> LN2["LayerNorm"]
+        LN2 --> FFN["Feed-Forward<br/>Linear, ReLU, Linear, Dropout"]
+        FFN --> R2["Residual Add"]
+        R1 --> R2
+    end
+    R2 --> LNF["Final LayerNorm"]
+    LNF --> LM["LM Head"]
+    LM --> O["Next-token Logits"]
 ```
 
-The feed-forward network uses `n_embd → 4 * n_embd → n_embd` with ReLU and dropout. Autoregressive generation samples one token at a time and appends it to the context.
+Each block preserves the embedding dimension; the feed-forward network expands it from 384 to 1536 and projects back to 384. Attention uses a lower-triangular causal mask and `1 / sqrt(d_k)` scaling, where `d_k` is the per-head Q/K dimension.
 
-## Model Configuration
+## 2. Core Components
 
-Defaults in `config.py`:
-
-| Parameter | Value |
+| Component | Implementation |
 | --- | --- |
-| `n_embd` | 384 |
-| `num_heads` | 6 |
-| `head_size` | 64 (`n_embd // num_heads`) |
-| `n_layer` | 6 |
-| `block_size` | 256 |
-| `dropout` | 0.2 |
-| Character vocabulary size | Derived from `data/input.txt` |
+| Character-level tokenizer | Builds a sorted character vocabulary with reversible character-to-ID mappings. |
+| Causal attention | Handwritten Q/K/V projections, scaled dot products, causal masking, and concatenated head outputs. |
+| Transformer blocks | Pre-LayerNorm attention and ReLU feed-forward sublayers, each with a residual connection. |
+| Next-token prediction | Inputs and targets are shifted by one character; cross-entropy is computed from vocabulary logits. |
+| Generation | Crops context, uses the last timestep, applies temperature and optional top-k filtering, then samples and appends one token. |
 
-## Attention Implementation
+## 3. Training & Validation
 
-Each head computes standard Scaled Dot-Product Attention:
+The included `data/input.txt` is Tiny Shakespeare, with a [dataset reference in karpathy/char-rnn](https://github.com/karpathy/char-rnn/tree/master/data/tinyshakespeare). Training uses a contiguous **90/10 train-validation split** and derives the vocabulary from the data.
 
-```text
-softmax(QK^T / sqrt(d_k) + causal_mask) V
-```
+Current defaults in `config.py`:
 
-`d_k` is the Q/K dimension of a single attention head, equal to `head_size`. The implementation obtains it directly from `k.size(-1)`. The causal mask prevents a position from attending to future tokens. Head outputs are concatenated and passed through an output projection.
+| Setting | Value |
+| --- | --- |
+| Embedding dimensions | 384 |
+| Attention heads / head dimension | 6 / 64 |
+| Transformer layers | 6 |
+| Context length | 256 characters |
+| Dropout | 0.2 |
 
-## Installation
+Training uses AdamW with a learning rate of `3e-4` and batch size 64. **The default 20 optimizer updates are for smoke training only.** Train/validation loss is evaluated initially, periodically, and after the final update; logged steps count completed optimizer updates.
 
-Python 3.12 was used for local verification. Run the following commands from the project root:
+No formal training benchmark, perplexity result, or attention-scaling ablation is reported.
 
-```bash
-python -m venv .venv
-```
+## 4. Key Engineering Work
 
-Activate the environment in Windows PowerShell:
+This version builds on [HaoPan036/Mini-GPT](https://github.com/HaoPan036/Mini-GPT). Changes to the upstream foundation include:
+
+- **Per-head attention scaling:** use `k.size(-1) ** -0.5` rather than the input embedding dimension; the current head dimension is 64.
+- **Seed reproducibility:** seed Python, NumPy, and PyTorch CPU/CUDA with `seed=42` before initialization and batch sampling.
+- **Checkpoint/evaluation alignment:** evaluate after the final optimizer update, then save the matching parameters with step and seed metadata.
+- **Input validation:** check head count/divisibility, sequence length, positive temperature, and positive integer top-k values.
+- **10 core correctness tests:** cover tokenizer round trip, attention/GPT shapes, causal masking, finite loss, checkpoint reload, numerical attention, and input constraints.
+
+The numerical test compares a Head with `n_embd=12`, `head_size=4`, and dropout disabled against an explicit scaled dot-product calculation, so embedding-dimension scaling cannot pass unnoticed.
+
+## 5. Quick Start
+
+Python 3.12 was used for local verification. From the project root, create and activate an environment, then install dependencies:
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-On Linux or macOS:
-
-```bash
-source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
 python -m pip install -r requirements.txt
 ```
 
-## Training
+On Linux/macOS, activate with `source .venv/bin/activate` instead.
 
 ```bash
 python train.py
-```
-
-Training reads `data/input.txt`, builds the character vocabulary, and splits the token sequence into 90% training and 10% validation data. The included data is Tiny Shakespeare; a dataset reference is available in [karpathy/char-rnn](https://github.com/karpathy/char-rnn/tree/master/data/tinyshakespeare).
-
-Edit `config.py` to change the model and training configuration. The current defaults run 20 optimizer updates as a smoke-training configuration, with `batch_size=64`, `learning_rate=3e-4`, and `seed=42`. CUDA is selected when available; otherwise training uses CPU. These defaults check the pipeline and do not establish model quality.
-
-Python, NumPy, and PyTorch are seeded before model initialization and batch sampling. Reproducibility across different devices or library versions is not guaranteed.
-
-Logged steps count completed optimizer updates. Train/validation loss is evaluated initially, periodically, and after the final update. The final evaluation corresponds to the parameters saved in `ckpt.pt`. Training overwrites that file and then generates a sample under `torch.no_grad()`.
-
-Checkpoints are generated locally and are not included in the repository. Earlier checkpoints trained with embedding-dimension attention scaling should be retrained for the current implementation.
-
-## Text Generation
-
-Train a model first to create `ckpt.pt`, then run:
-
-```bash
-python generate.py
-```
-
-Generate from a prompt:
-
-```bash
 python generate.py --prompt "ROMEO:" --max_new_tokens 200
-```
-
-Control sampling:
-
-```bash
-python generate.py --prompt "ROMEO:" --temperature 0.8 --top_k 20 --checkpoint ckpt.pt --device cpu
-```
-
-Prompts must contain characters in the saved tokenizer vocabulary. `temperature` must be positive, and `top_k` must be a positive integer when supplied. Generation uses the last `block_size` tokens as context. Run `python generate.py --help` for all supported arguments.
-
-## Tests
-
-```bash
 python -m pytest
 ```
 
-The 10 core tests cover:
+Training creates local `ckpt.pt`; run it before generation. Prompts must use the saved tokenizer's characters. Checkpoints and local environments are Git-ignored; tests use temporary checkpoint files.
 
-- Tokenizer encode/decode round trip
-- Attention output shape
-- Multi-Head Attention output shape
-- Causal masking in attention and GPT
-- GPT forward logits and finite scalar loss
-- Checkpoint save/load with identical logits and tokenizer mappings
-- Numerical Attention correctness against an explicit scaled dot-product calculation
-- Input validation for head configuration, sequence length, and sampling parameters
-
-The numerical test uses `n_embd=12` and `head_size=4` to distinguish head-dimension scaling from embedding-dimension scaling. Checkpoint tests use temporary files.
-
-## Project Structure
+## 6. Project Structure
 
 ```text
 mini-gpt-pytorch/
-├── data/
-│   └── input.txt
-├── tests/
-│   └── test_core.py
-├── model.py
-├── train.py
-├── generate.py
-├── utils.py
-├── config.py
+├── model.py              # Attention, Transformer blocks, language model
+├── train.py              # Training, validation, checkpoint saving
+├── generate.py           # Checkpoint loading and text generation CLI
+├── utils.py              # Character-level tokenizer
+├── config.py             # Model/training defaults and seed
 ├── requirements.txt
+├── data/input.txt        # Tiny Shakespeare
+├── tests/test_core.py    # 10 core correctness tests
 ├── README.md
 └── .gitignore
 ```
 
-## Project Scope
+## 7. Limitations & Attribution
 
-This is a small language model and GPT architecture implementation focused on understanding and validating Transformer internals. It is not an instruction-tuned assistant or a question-answering model, and does not provide ChatGPT-level capabilities.
+- Character-level tokenization and a 256-character context limit the sequence representation and available history.
+- The small model and 20-update default support pipeline verification; they do not establish language-generation quality.
+- This is a next-token language model, not an instruction-tuned chatbot or question-answering assistant.
+- Fixed seeds provide basic reproducibility; results can differ across devices and library versions.
 
-## Attribution
+The original model and training pipeline come from [HaoPan036/Mini-GPT](https://github.com/HaoPan036/Mini-GPT). Personal project work is the scaling correction, reproducibility, evaluation alignment, validation, tests, and documentation listed above; the full Transformer implementation is not claimed as independently original. AI coding assistance was used.
 
-This project is based on [HaoPan036/Mini-GPT](https://github.com/HaoPan036/Mini-GPT), which was used as the starting point for learning, cleanup, and modification. The upstream implementation remains the basis of the model and training pipeline.
+The upstream README mentions MIT, but this checkout has no standalone `LICENSE` file. No new license is assigned here. Upstream licensing and redistribution permissions must be clarified before public redistribution; attribution alone does not establish permission.
 
-Changes in this version include:
-
-- Standard attention scaling correction using the per-head Q/K dimension
-- Reproducibility improvements through shared random seed configuration
-- Final evaluation/checkpoint alignment
-- Input validation checks
-- Core correctness tests
-- Project cleanup and documentation
-
-The upstream project credits Andrej Karpathy's nanoGPT. References retained from the original project:
+References retained from upstream:
 
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
 - [Language Models are Unsupervised Multitask Learners](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 - [nanoGPT](https://github.com/karpathy/nanoGPT)
 - [The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)
-
-The upstream README mentions MIT, but no standalone `LICENSE` file is included in this checkout. This cleanup does not add or assign a new license. Upstream licensing terms should be clarified before public redistribution.
